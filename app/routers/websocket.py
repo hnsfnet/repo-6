@@ -1,6 +1,5 @@
 import json
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
 
 from app.services.websocket_manager import websocket_manager
 from app.services.user_service import user_service

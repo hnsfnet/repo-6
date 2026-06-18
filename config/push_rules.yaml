@@ -1,0 +1,33 @@
+rules:
+  - id: "login_fail_alert"
+    name: "登录失败安全告警"
+    event_type: "login_fail"
+    condition: "fail_count >= 3"
+    template_id: "security_alert"
+    target_type: "user"
+    target_id: ""
+    priority: "urgent"
+    enabled: true
+    description: "用户连续3次登录失败，推送安全告警"
+
+  - id: "order_approval"
+    name: "大额订单审批通知"
+    event_type: "order_created"
+    condition: "amount > 10000"
+    template_id: "order_approval"
+    target_type: "group"
+    target_id: "approvers"
+    priority: "important"
+    enabled: true
+    description: "订单金额超过10000，推送审批通知给审批组"
+
+  - id: "low_stock_warning"
+    name: "库存不足预警"
+    event_type: "stock_changed"
+    condition: "stock < 10"
+    template_id: "low_stock"
+    target_type: "group"
+    target_id: "warehouse"
+    priority: "important"
+    enabled: true
+    description: "商品库存低于10件，推送补货预警"
