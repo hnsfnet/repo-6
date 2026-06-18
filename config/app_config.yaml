@@ -1,0 +1,15 @@
+message_store:
+  type: in_memory
+
+channels:
+  default: websocket
+
+  list:
+    websocket:
+      type: websocket
+      enabled: true
+
+  group_mapping:
+    approvers: websocket
+    warehouse: websocket
+    ops: websocket

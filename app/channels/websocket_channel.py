@@ -4,11 +4,14 @@ from typing import Dict, List, Set
 from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime
 
+from app.channels.base_channel import Channel
 from app.models.message import Message, MessageResponse
 from app.services.user_service import user_service
 
 
-class WebSocketManager:
+class WebSocketChannel(Channel):
+    channel_type: str = "websocket"
+
     def __init__(self):
         self._active_connections: Dict[str, WebSocket] = {}
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
@@ -32,7 +35,7 @@ class WebSocketManager:
     def is_online(self, user_id: str) -> bool:
         return user_id in self._active_connections
 
-    async def send_message(self, user_id: str, message: Message):
+    async def send(self, user_id: str, message: Message) -> bool:
         if self.is_online(user_id):
             websocket = self._active_connections.get(user_id)
             if not websocket:
@@ -56,7 +59,7 @@ class WebSocketManager:
     async def broadcast(self, user_ids: List[str], message: Message) -> Dict[str, bool]:
         results = {}
         for user_id in user_ids:
-            results[user_id] = await self.send_message(user_id, message)
+            results[user_id] = await self.send(user_id, message)
         return results
 
     def _start_heartbeat(self, user_id: str, websocket: WebSocket):
@@ -94,6 +97,3 @@ class WebSocketManager:
 
     def get_online_users(self) -> Set[str]:
         return set(self._active_connections.keys())
-
-
-websocket_manager = WebSocketManager()

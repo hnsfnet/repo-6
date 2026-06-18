@@ -3,6 +3,7 @@ from fastapi import APIRouter
 
 from app.models.rule import EventReportRequest, EventReportResponse, PushRuleResponse
 from app.services.rule_engine import rule_engine
+from app.core.event_bus import event_bus
 
 router = APIRouter(prefix="/api/events", tags=["推送规则"])
 
@@ -15,6 +16,7 @@ async def report_event(request: EventReportRequest):
     - **event_data**: 事件数据，用于条件匹配和模板参数替换
     - **target_user_id**: 可选，指定目标用户ID（覆盖规则中的 target_id）
     """
+    await event_bus.publish_event("event.reported", **request.model_dump())
     return await rule_engine.process_event(request)
 
 

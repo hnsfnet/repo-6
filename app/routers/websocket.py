@@ -1,8 +1,7 @@
 import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
 
-from app.services.websocket_manager import websocket_manager
-from app.services.user_service import user_service
+from app.channels.websocket_channel import ws_channel
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -18,12 +17,13 @@ async def websocket_endpoint(
     - 连接成功后会自动推送离线消息
     - 服务端每30秒发送心跳包
     """
+    from app.services.user_service import user_service
     user = user_service.get_user(user_id)
     if not user:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="用户不存在")
         return
 
-    await websocket_manager.connect(websocket, user_id)
+    await ws_channel.connect(websocket, user_id)
 
     try:
         while True:
@@ -36,6 +36,6 @@ async def websocket_endpoint(
                 pass
 
     except WebSocketDisconnect:
-        await websocket_manager.disconnect(user_id)
+        await ws_channel.disconnect(user_id)
     except Exception:
-        await websocket_manager.disconnect(user_id)
+        await ws_channel.disconnect(user_id)

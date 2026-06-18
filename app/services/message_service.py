@@ -1,24 +1,24 @@
 import uuid
-import hashlib
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import List
+
 from fastapi import HTTPException
 
 from app.models.message import (
-    Message, MessageResponse, SendMessageRequest,
-    MessagePriority, MessageTargetType, UnreadCountResponse
+    Message, MessageResponse, SendMessageRequest, UnreadCountResponse,
+    MessageTargetType
 )
 from app.services.user_service import user_service
 from app.services.group_service import group_service
-from app.services.websocket_manager import websocket_manager
+from app.stores.factory import message_store
+from app.channels.channel_manager import channel_manager
+from app.core.event_bus import event_bus
 
 
 class MessageService:
-    def __init__(self):
-        self._all_messages: Dict[str, Message] = {}
-        self._user_messages: Dict[str, List[str]] = {}
-        self._recent_sent: Dict[Tuple[str, str], datetime] = {}
-        self._deduplication_window = timedelta(seconds=60)
+    def __init__(self, store=None, ch_manager=None, bus=None):
+        self._store = store or message_store
+        self._channel_manager = ch_manager or channel_manager
+        self._event_bus = bus or event_bus
 
     async def send_message(self, request: SendMessageRequest) -> List[MessageResponse]:
         recipient_ids = self._get_recipient_ids(request.target_type, request.target_id)
@@ -27,12 +27,13 @@ class MessageService:
             raise HTTPException(status_code=404, detail="没有找到接收者")
 
         unique_recipients = list(dict.fromkeys(recipient_ids))
-        content_hash = self._get_content_hash(request.title, request.content)
+        content_hash = self._store.get_content_hash(request.title, request.content) if hasattr(self._store, 'get_content_hash') else None
 
         messages = []
         for recipient_id in unique_recipients:
-            if not self._should_send(recipient_id, content_hash):
-                continue
+            if content_hash is not None and hasattr(self._store, 'should_send'):
+                if not self._store.should_send(recipient_id, content_hash):
+                    continue
 
             message = Message(
                 id=str(uuid.uuid4()),
@@ -43,11 +44,23 @@ class MessageService:
                 target_id=request.target_id,
                 sender_id=request.sender_id
             )
-            self._all_messages[message.id] = message
-            self._add_user_message(recipient_id, message.id)
-            self._mark_sent(recipient_id, content_hash)
+            self._store.save(recipient_id, message)
+            if content_hash is not None and hasattr(self._store, 'mark_sent'):
+                self._store.mark_sent(recipient_id, content_hash)
+
             messages.append(message)
-            await websocket_manager.send_message(recipient_id, message)
+            await self._channel_manager.send(
+                recipient_id, message,
+                target_type=request.target_type.value,
+                target_id=request.target_id
+            )
+
+            await self._event_bus.publish_event(
+                "message.sent",
+                message_id=message.id,
+                user_id=recipient_id,
+                title=message.title
+            )
 
         return [MessageResponse.model_validate(msg) for msg in messages]
 
@@ -55,77 +68,38 @@ class MessageService:
         user = user_service.get_user(user_id)
         if not user:
             raise HTTPException(status_code=404, detail=f"用户 {user_id} 不存在")
-
-        message_ids = self._user_messages.get(user_id, [])
-        messages = [self._all_messages[mid] for mid in message_ids if mid in self._all_messages]
-
-        if unread_only:
-            messages = [msg for msg in messages if not msg.is_read]
-
-        messages.sort(key=lambda x: x.created_at, reverse=True)
+        messages = self._store.get_by_user(user_id, unread_only=unread_only)
         return [MessageResponse.model_validate(msg) for msg in messages]
 
     def get_message_detail(self, user_id: str, message_id: str) -> MessageResponse:
-        message = self._all_messages.get(message_id)
+        message = self._store.get(user_id, message_id)
         if not message:
             raise HTTPException(status_code=404, detail=f"消息 {message_id} 不存在")
-
-        user_message_ids = self._user_messages.get(user_id, [])
-        if message_id not in user_message_ids:
-            raise HTTPException(status_code=403, detail="无权访问该消息")
-
         return MessageResponse.model_validate(message)
 
     def mark_as_read(self, user_id: str, message_id: str) -> MessageResponse:
-        message = self._all_messages.get(message_id)
+        message = self._store.mark_read(user_id, message_id)
         if not message:
             raise HTTPException(status_code=404, detail=f"消息 {message_id} 不存在")
-
-        user_message_ids = self._user_messages.get(user_id, [])
-        if message_id not in user_message_ids:
-            raise HTTPException(status_code=403, detail="无权操作该消息")
-
-        message.is_read = True
-        message.read_at = datetime.utcnow()
         return MessageResponse.model_validate(message)
 
     def mark_all_as_read(self, user_id: str) -> int:
         user = user_service.get_user(user_id)
         if not user:
             raise HTTPException(status_code=404, detail=f"用户 {user_id} 不存在")
-
-        message_ids = self._user_messages.get(user_id, [])
-        count = 0
-        for mid in message_ids:
-            msg = self._all_messages.get(mid)
-            if msg and not msg.is_read:
-                msg.is_read = True
-                msg.read_at = datetime.utcnow()
-                count += 1
-        return count
+        return self._store.mark_all_read(user_id)
 
     def delete_message(self, user_id: str, message_id: str):
-        user_message_ids = self._user_messages.get(user_id, [])
-        if message_id not in user_message_ids:
+        existing = self._store.get(user_id, message_id)
+        if not existing:
             raise HTTPException(status_code=404, detail=f"消息 {message_id} 不存在")
-
-        user_message_ids.remove(message_id)
-        if message_id in self._all_messages:
-            del self._all_messages[message_id]
+        self._store.delete(user_id, message_id)
 
     def get_unread_count(self, user_id: str) -> UnreadCountResponse:
         user = user_service.get_user(user_id)
         if not user:
             raise HTTPException(status_code=404, detail=f"用户 {user_id} 不存在")
-
-        message_ids = self._user_messages.get(user_id, [])
-        count = 0
-        for mid in message_ids:
-            msg = self._all_messages.get(mid)
-            if msg and not msg.is_read:
-                count += 1
-
-        return UnreadCountResponse(user_id=user_id, unread_count=count)
+        return UnreadCountResponse(user_id=user_id, unread_count=self._store.unread_count(user_id))
 
     def _get_recipient_ids(self, target_type: MessageTargetType, target_id: str) -> List[str]:
         if target_type == MessageTargetType.USER:
@@ -136,36 +110,6 @@ class MessageService:
         elif target_type == MessageTargetType.GROUP:
             return group_service.get_group_members(target_id)
         return []
-
-    def _add_user_message(self, user_id: str, message_id: str):
-        if user_id not in self._user_messages:
-            self._user_messages[user_id] = []
-        self._user_messages[user_id].append(message_id)
-
-    def _get_content_hash(self, title: str, content: str) -> str:
-        combined = f"{title}:{content}"
-        return hashlib.md5(combined.encode("utf-8")).hexdigest()
-
-    def _should_send(self, user_id: str, content_hash: str) -> bool:
-        self._cleanup_expired()
-        key = (user_id, content_hash)
-        last_sent = self._recent_sent.get(key)
-        if last_sent and (datetime.utcnow() - last_sent) < self._deduplication_window:
-            return False
-        return True
-
-    def _mark_sent(self, user_id: str, content_hash: str):
-        key = (user_id, content_hash)
-        self._recent_sent[key] = datetime.utcnow()
-
-    def _cleanup_expired(self):
-        now = datetime.utcnow()
-        expired_keys = [
-            key for key, last_sent in self._recent_sent.items()
-            if (now - last_sent) >= self._deduplication_window
-        ]
-        for key in expired_keys:
-            del self._recent_sent[key]
 
 
 message_service = MessageService()

@@ -4,20 +4,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import user, group, message, websocket, template, event
+from app.core.config import load_config
 from app.services.rule_engine import rule_engine
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    yaml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "push_rules.yaml")
-    rule_engine.load_from_yaml(yaml_path)
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    app_config_path = os.path.join(base_dir, "config", "app_config.yaml")
+    rules_config_path = os.path.join(base_dir, "config", "push_rules.yaml")
+
+    load_config(app_config_path)
+    rule_engine.load_from_yaml(rules_config_path)
     yield
 
 
 app = FastAPI(
     title="信达 - 实时消息推送中心",
-    description="基于 FastAPI 的实时消息推送服务，支持 WebSocket 实时推送、用户和分组管理、消息存储与查询、消息模板与推送规则引擎",
-    version="2.0.0",
+    description="基于 FastAPI 的实时消息推送服务，支持可插拔推送通道、可插拔消息存储、事件总线解耦",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -42,14 +47,14 @@ def health_check():
     """
     服务健康检查接口
     """
-    return {"status": "ok", "service": "信达 - 实时消息推送中心", "version": "2.0.0"}
+    return {"status": "ok", "service": "信达 - 实时消息推送中心", "version": "3.0.0"}
 
 
 @app.get("/", summary="根路径")
 def root():
     return {
         "name": "信达 - 实时消息推送中心",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "docs": "/docs",
         "health": "/health"
     }

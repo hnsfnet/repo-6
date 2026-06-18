@@ -8,13 +8,23 @@ from fastapi import HTTPException
 from app.models.rule import PushRule, PushRuleResponse, EventReportRequest, EventReportResponse
 from app.models.message import SendMessageRequest, MessagePriority, MessageTargetType
 from app.services.template_service import template_service
+from app.core.event_bus import Event, event_bus
 
 logger = logging.getLogger(__name__)
 
 
 class RuleEngine:
-    def __init__(self):
+    def __init__(self, bus=None):
         self._rules: Dict[str, PushRule] = {}
+        self._event_bus = bus or event_bus
+        self._setup_subscribers()
+
+    def _setup_subscribers(self):
+        self._event_bus.subscribe("event.reported", self._on_event_reported)
+
+    async def _on_event_reported(self, event: Event):
+        req = EventReportRequest(**event.data)
+        await self.process_event(req)
 
     def load_from_yaml(self, yaml_path: str):
         if not os.path.exists(yaml_path):
@@ -80,6 +90,16 @@ class RuleEngine:
 
             priority = MessagePriority(rule.priority)
 
+            await self._event_bus.publish_event(
+                "push.triggered",
+                title=title,
+                content=content,
+                priority=priority.value,
+                target_type=target_type.value,
+                target_id=target_id,
+                rule_id=rule.id
+            )
+
             from app.services.message_service import message_service
             send_request = SendMessageRequest(
                 title=title,
@@ -141,12 +161,6 @@ class RuleEngine:
             return value
 
     def _normalize_numeric_literals(self, condition: str) -> str:
-        def replace_match(match):
-            num_str = match.group(0)
-            if '.' in num_str:
-                return num_str
-            return num_str
-
         return condition
 
 
