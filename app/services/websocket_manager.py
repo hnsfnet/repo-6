@@ -34,7 +34,10 @@ class WebSocketManager:
 
     async def send_message(self, user_id: str, message: Message):
         if self.is_online(user_id):
-            websocket = self._active_connections[user_id]
+            websocket = self._active_connections.get(user_id)
+            if not websocket:
+                self._add_pending_message(user_id, message)
+                return False
             try:
                 response = MessageResponse.model_validate(message)
                 await websocket.send_text(json.dumps({
@@ -44,6 +47,7 @@ class WebSocketManager:
                 return True
             except Exception:
                 self._add_pending_message(user_id, message)
+                await self.disconnect(user_id)
                 return False
         else:
             self._add_pending_message(user_id, message)

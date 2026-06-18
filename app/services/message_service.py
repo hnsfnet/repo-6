@@ -1,6 +1,7 @@
 import uuid
-from datetime import datetime
-from typing import Dict, List, Optional
+import hashlib
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from app.models.message import (
@@ -16,6 +17,8 @@ class MessageService:
     def __init__(self):
         self._all_messages: Dict[str, Message] = {}
         self._user_messages: Dict[str, List[str]] = {}
+        self._recent_sent: Dict[Tuple[str, str], datetime] = {}
+        self._deduplication_window = timedelta(seconds=60)
 
     async def send_message(self, request: SendMessageRequest) -> List[MessageResponse]:
         recipient_ids = self._get_recipient_ids(request.target_type, request.target_id)
@@ -23,8 +26,14 @@ class MessageService:
         if not recipient_ids:
             raise HTTPException(status_code=404, detail="没有找到接收者")
 
+        unique_recipients = list(dict.fromkeys(recipient_ids))
+        content_hash = self._get_content_hash(request.title, request.content)
+
         messages = []
-        for recipient_id in recipient_ids:
+        for recipient_id in unique_recipients:
+            if not self._should_send(recipient_id, content_hash):
+                continue
+
             message = Message(
                 id=str(uuid.uuid4()),
                 title=request.title,
@@ -36,6 +45,7 @@ class MessageService:
             )
             self._all_messages[message.id] = message
             self._add_user_message(recipient_id, message.id)
+            self._mark_sent(recipient_id, content_hash)
             messages.append(message)
             await websocket_manager.send_message(recipient_id, message)
 
@@ -131,6 +141,31 @@ class MessageService:
         if user_id not in self._user_messages:
             self._user_messages[user_id] = []
         self._user_messages[user_id].append(message_id)
+
+    def _get_content_hash(self, title: str, content: str) -> str:
+        combined = f"{title}:{content}"
+        return hashlib.md5(combined.encode("utf-8")).hexdigest()
+
+    def _should_send(self, user_id: str, content_hash: str) -> bool:
+        self._cleanup_expired()
+        key = (user_id, content_hash)
+        last_sent = self._recent_sent.get(key)
+        if last_sent and (datetime.utcnow() - last_sent) < self._deduplication_window:
+            return False
+        return True
+
+    def _mark_sent(self, user_id: str, content_hash: str):
+        key = (user_id, content_hash)
+        self._recent_sent[key] = datetime.utcnow()
+
+    def _cleanup_expired(self):
+        now = datetime.utcnow()
+        expired_keys = [
+            key for key, last_sent in self._recent_sent.items()
+            if (now - last_sent) >= self._deduplication_window
+        ]
+        for key in expired_keys:
+            del self._recent_sent[key]
 
 
 message_service = MessageService()

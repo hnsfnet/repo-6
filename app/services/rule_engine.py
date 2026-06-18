@@ -105,20 +105,49 @@ class RuleEngine:
         try:
             context = {}
             for key, value in event_data.items():
-                try:
-                    context[key] = float(value)
-                except (ValueError, TypeError):
-                    context[key] = value
+                parsed_value = self._parse_numeric_value(value)
+                context[key] = parsed_value
 
             evaluated_condition = condition
             for key, value in context.items():
                 pattern = r'\b' + re.escape(key) + r'\b'
-                evaluated_condition = re.sub(pattern, repr(value), evaluated_condition)
+                if isinstance(value, (int, float)):
+                    replacement = str(value)
+                else:
+                    replacement = repr(value)
+                evaluated_condition = re.sub(pattern, replacement, evaluated_condition)
+
+            evaluated_condition = self._normalize_numeric_literals(evaluated_condition)
 
             return bool(eval(evaluated_condition, {"__builtins__": {}}, {}))
         except Exception as e:
             logger.warning(f"条件表达式求值失败: condition={condition}, error={e}")
             return False
+
+    def _parse_numeric_value(self, value: str):
+        if not isinstance(value, str):
+            return value
+
+        cleaned = re.sub(r'[^\d.\-]', '', value)
+        if not cleaned or cleaned in ('.', '-', '-.'):
+            return value
+
+        try:
+            if '.' in cleaned:
+                return float(cleaned)
+            else:
+                return int(cleaned)
+        except (ValueError, TypeError):
+            return value
+
+    def _normalize_numeric_literals(self, condition: str) -> str:
+        def replace_match(match):
+            num_str = match.group(0)
+            if '.' in num_str:
+                return num_str
+            return num_str
+
+        return condition
 
 
 rule_engine = RuleEngine()
